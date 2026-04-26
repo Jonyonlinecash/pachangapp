@@ -351,6 +351,12 @@ textarea.form-input{resize:vertical;min-height:70px;}
   </div>
 </div>
 
+<!-- PUBLIC PROFILE -->
+<div id="screen-public-profile" class="screen">
+  <div class="back-btn" id="pub-back-btn">← Volver</div>
+  <div id="pub-content"></div>
+</div>
+
 <!-- EDIT PACHANGA MODAL -->
 <div class="modal-overlay" id="edit-pachanga-modal">
   <div class="modal">
@@ -647,39 +653,46 @@ async function openDetail(id) {
   ]);
   currentPachanga = p;
 
-  // Load player profiles for avatars
   const playerIds = (apuntados||[]).map(a=>a.user_id).filter(Boolean);
-  const { data: playerPerfiles } = playerIds.length ? await sb.from('perfiles').select('id,avatar_url,username').in('id',playerIds) : {data:[]};
+  const { data: playerPerfiles } = playerIds.length ? await sb.from('perfiles').select('id,avatar_url,username,nombre').in('id',playerIds) : {data:[]};
   const ppMap = {};
   (playerPerfiles||[]).forEach(pp => { ppMap[pp.id] = pp; });
 
-  // Load host profile
-  const hostPerfil = ppMap[p.host_id] || null;
-  const hostAvUrl = hostPerfil?.avatar_url;
-  const hostName = hostPerfil?.username ? '@'+hostPerfil.username : (p.host_nombre||'Anónimo');
+  // Also load host profile if not in playerIds
+  let hostPerfilData = ppMap[p.host_id];
+  if (!hostPerfilData) {
+    const { data: hp } = await sb.from('perfiles').select('id,avatar_url,username,nombre').eq('id',p.host_id).single();
+    if (hp) { hostPerfilData = hp; ppMap[hp.id] = hp; }
+  }
 
-  const apuntadosApp = apuntados?.length||0;
-  const confirmadosExternos = p.confirmados_externos||0;
+  const hostAvUrl = hostPerfilData?.avatar_url;
+  const hostName = hostPerfilData?.username ? '@'+hostPerfilData.username : (p.host_nombre||'Anónimo');
+
   const titulares = (apuntados||[]).filter(a=>!a.es_reserva);
   const reservas = (apuntados||[]).filter(a=>a.es_reserva);
-  const conf = titulares.length + confirmadosExternos;
+  const conf = titulares.length + (p.confirmados_externos||0);
   const libre = p.total_jugadores - conf;
-  const pct = Math.round((conf/p.total_jugadores)*100);
-  const fecha = new Date(p.fecha+'T00:00:00').toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
-  const hora = p.hora.substring(0,5);
+  const pct = Math.min(100, Math.round((conf/p.total_jugadores)*100));
+  const fechaStr = new Date(p.fecha+'T00:00:00').toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
+  const horaStr = p.hora.substring(0,5);
   const yaApuntado = apuntados?.some(a=>a.user_id===currentUser?.id && !a.es_reserva);
   const yaReserva = apuntados?.some(a=>a.user_id===currentUser?.id && a.es_reserva);
   const esHost = currentUser?.id === p.host_id;
   const sc = libre===1?'spot-last':libre<=2?'spot-few':'spot-ok';
   const avColors = ['av0','av1','av2','av3'];
 
+  // Has the match finished?
+  const matchDateTime = new Date(`${p.fecha}T${p.hora}`);
+  const ahoraMs = Date.now();
+  const partidoAcabado = ahoraMs > matchDateTime.getTime();
+
   const makePlayerRow = (a, i) => {
     const pp = ppMap[a.user_id]||{};
     const av = pp.avatar_url ? `<img src="${pp.avatar_url}" alt="">` : getInitials(a.user_nombre||'?');
     const displayName = pp.username ? '@'+pp.username : (a.user_nombre||'Jugador');
-    return `<div class="player-row">
+    return `<div class="player-row" style="cursor:pointer" onclick="openPublicProfile('${a.user_id}','${(a.user_nombre||'').replace(/'/g,"\\'")}')">
       <div class="p-av ${avColors[i%4]}">${av}</div>
-      <div class="p-info"><div class="p-name">${displayName}</div><div class="p-stars">★★★★☆</div></div>
+      <div class="p-info"><div class="p-name">${displayName}</div></div>
       ${a.user_id===p.host_id?'<span class="host-pill">Anfitrión</span>':''}
     </div>`;
   };
@@ -692,7 +705,7 @@ async function openDetail(id) {
     </div>` : '';
 
   const resenasHTML = (resenas||[]).length ? (resenas||[]).map(r => {
-    const av = r.autor_avatar ? `<img src="${r.autor_avatar}" alt="">` : getInitials(r.autor_nombre||'?');
+    const av = getInitials(r.autor_nombre||'?');
     return `<div class="review-card">
       <div class="rev-header">
         <div class="rev-av">${av}</div>
@@ -703,13 +716,37 @@ async function openDetail(id) {
     </div>`;
   }).join('') : '<p style="font-size:13px;color:var(--text-muted);padding:0.5rem 0">Todavía no hay reseñas.</p>';
 
-  const writeReviewHTML = currentUser && !esHost ? `
-    <div class="write-review">
-      <div class="wr-title">Deja tu valoración</div>
-      <div class="star-row" id="star-row-${id}">${[1,2,3,4,5].map(n=>`<span class="star-pick" onclick="setStar('${id}',${n})">★</span>`).join('')}</div>
-      <textarea class="form-input" id="rev-txt-${id}" placeholder="¿Cómo fue la pachanga?"></textarea>
-      <br><br><button class="btn-rev" onclick="enviarResena('${id}')">Publicar reseña</button>
-    </div>` : '';
+  // Reviews section logic
+  let reviewSectionHTML = '';
+  if (!partidoAcabado) {
+    reviewSectionHTML = `<p style="font-size:13px;color:var(--text-muted);padding:0.5rem 0;font-style:italic;">Las valoraciones se habilitan cuando acabe el partido.</p>`;
+  } else if (esHost) {
+    // Host reviews each player who participated
+    const jugadoresParaValorar = titulares.filter(a => a.user_id !== p.host_id);
+    const yaValorados = new Set((resenas||[]).filter(r=>r.autor_id===currentUser.id).map(r=>r.destinatario_id));
+    const pendientesHTML = jugadoresParaValorar.filter(a=>!yaValorados.has(a.user_id)).map(a => {
+      const displayName = ppMap[a.user_id]?.username ? '@'+ppMap[a.user_id].username : (a.user_nombre||'Jugador');
+      return `<div class="write-review" id="wr-${a.user_id}">
+        <div class="wr-title">Valorar a ${displayName}</div>
+        <div class="star-row" id="star-row-${a.user_id}">${[1,2,3,4,5].map(n=>`<span class="star-pick" onclick="setStar('${a.user_id}',${n})">★</span>`).join('')}</div>
+        <textarea class="form-input" id="rev-txt-${a.user_id}" placeholder="¿Cómo fue jugar con ${displayName}?"></textarea>
+        <br><br><button class="btn-rev" onclick="enviarResenaAJugador('${id}','${a.user_id}','${displayName.replace(/'/g,"\\'")}')">Publicar valoración</button>
+      </div>`;
+    }).join('');
+    reviewSectionHTML = (pendientesHTML || '<p style="font-size:13px;color:var(--text-muted)">Ya has valorado a todos los jugadores.</p>') + resenasHTML;
+  } else if (yaApuntado) {
+    const yaValoroAlHost = (resenas||[]).some(r=>r.autor_id===currentUser.id && r.destinatario_id===p.host_id);
+    const writeHTML = !yaValoroAlHost ? `
+      <div class="write-review">
+        <div class="wr-title">Valorar al anfitrión ${hostName}</div>
+        <div class="star-row" id="star-row-host">${[1,2,3,4,5].map(n=>`<span class="star-pick" onclick="setStar('host',${n})">★</span>`).join('')}</div>
+        <textarea class="form-input" id="rev-txt-host" placeholder="¿Cómo fue la pachanga?"></textarea>
+        <br><br><button class="btn-rev" onclick="enviarResenaAlHost('${id}','${p.host_id}')">Publicar valoración</button>
+      </div>` : '';
+    reviewSectionHTML = writeHTML + resenasHTML;
+  } else {
+    reviewSectionHTML = resenasHTML;
+  }
 
   const hostAvHTML = hostAvUrl ? `<img src="${hostAvUrl}" alt="${hostName}">` : getInitials(p.host_nombre||'?');
 
@@ -717,13 +754,15 @@ async function openDetail(id) {
     <div class="detail-card">
       <div class="badges"><span class="badge badge-${p.deporte}">${p.deporte==='futbol'?'⚽ Fútbol':p.deporte==='basket'?'🏀 Baloncesto':'🎾 Pádel'}</span><span class="badge badge-${p.nivel}">${p.nivel.charAt(0).toUpperCase()+p.nivel.slice(1)}</span></div>
       <div class="detail-title">${p.titulo}</div>
-      <div class="host-row">
+      <div class="host-row" style="cursor:pointer" onclick="openPublicProfile('${p.host_id}','${(p.host_nombre||'').replace(/'/g,"\\'")}')">
         <div class="host-av">${hostAvHTML}</div>
-        <div><div class="host-name">${hostName}</div><div class="host-rating">★★★★☆ <span style="color:var(--text-muted);font-size:11px">4.2</span></div></div>
+        <div>
+          <div class="host-name">${hostName} <span style="font-size:11px;color:var(--green)">ver perfil →</span></div>
+        </div>
       </div>
       <div class="info-grid">
         <div class="info-cell"><div class="info-label">Lugar</div><div class="info-val">📍 ${p.lugar}</div></div>
-        <div class="info-cell"><div class="info-label">Cuándo</div><div class="info-val">🕐 ${fecha} · ${hora}</div></div>
+        <div class="info-cell"><div class="info-label">Cuándo</div><div class="info-val">🕐 ${fechaStr} · ${horaStr}</div></div>
         <div class="info-cell"><div class="info-label">Nivel</div><div class="info-val">${p.nivel.charAt(0).toUpperCase()+p.nivel.slice(1)}</div></div>
         <div class="info-cell"><div class="info-label">Plazas libres</div><div class="info-val ${sc}">${libre} de ${p.total_jugadores}</div></div>
       </div>
@@ -738,8 +777,8 @@ async function openDetail(id) {
       ${reservasHTML}
     </div>
     <div class="section">
-      <div class="section-title">Reseñas</div>
-      ${writeReviewHTML}${resenasHTML}
+      <div class="section-title">Valoraciones</div>
+      ${reviewSectionHTML}
     </div>
     ${esHost ? `
     <div style="display:flex;gap:8px;margin:0 1rem 1rem;">
@@ -788,18 +827,87 @@ async function desapuntarse(id) {
   openDetail(id);
 }
 
-function setStar(id, n) {
-  selStarVal = n;
-  document.querySelectorAll(`#star-row-${id} .star-pick`).forEach((s,i) => s.classList.toggle('lit',i<n));
+let selStarMap = {};
+function setStar(key, n) {
+  selStarMap[key] = n;
+  document.querySelectorAll(`#star-row-${key} .star-pick`).forEach((s,i) => s.classList.toggle('lit',i<n));
 }
 
-async function enviarResena(id) {
-  if (!currentUser||!selStarVal) { showToast('Elige una puntuación'); return; }
-  const txt = document.getElementById(`rev-txt-${id}`).value.trim();
-  if (!txt) { showToast('Escribe algo en tu reseña'); return; }
+async function enviarResenaAJugador(pachId, jugadorId, jugadorNombre) {
+  if (!currentUser || !selStarMap[jugadorId]) { showToast('Elige una puntuación'); return; }
+  const txt = document.getElementById(`rev-txt-${jugadorId}`)?.value.trim();
+  if (!txt) { showToast('Escribe algo en tu valoración'); return; }
   const nombre = getDisplayName();
-  await sb.from('resenas').insert({ pachanga_id:id, autor_id:currentUser.id, autor_nombre:nombre, puntuacion:selStarVal, texto:txt, destinatario_id:currentPachanga?.host_id });
-  showToast('¡Reseña publicada!'); selStarVal=0; openDetail(id);
+  const { error } = await sb.from('resenas').insert({
+    pachanga_id: pachId, autor_id: currentUser.id, autor_nombre: nombre,
+    puntuacion: selStarMap[jugadorId], texto: txt, destinatario_id: jugadorId
+  });
+  if (error) { showToast('Error: '+error.message); return; }
+  showToast(`¡Valoración enviada a ${jugadorNombre}!`);
+  delete selStarMap[jugadorId];
+  openDetail(pachId);
+}
+
+async function enviarResenaAlHost(pachId, hostId) {
+  if (!currentUser || !selStarMap['host']) { showToast('Elige una puntuación'); return; }
+  const txt = document.getElementById('rev-txt-host')?.value.trim();
+  if (!txt) { showToast('Escribe algo en tu valoración'); return; }
+  const nombre = getDisplayName();
+  const { error } = await sb.from('resenas').insert({
+    pachanga_id: pachId, autor_id: currentUser.id, autor_nombre: nombre,
+    puntuacion: selStarMap['host'], texto: txt, destinatario_id: hostId
+  });
+  if (error) { showToast('Error: '+error.message); return; }
+  showToast('¡Valoración enviada al anfitrión!');
+  delete selStarMap['host'];
+  openDetail(pachId);
+}
+
+async function openPublicProfile(userId, nombre) {
+  showScreen('public-profile');
+  document.getElementById('pub-content').innerHTML = '<div class="loading" style="padding:2rem">Cargando perfil...</div>';
+  const [{ data: perfil }, { data: resenas }, { count: jugadas }, { count: organizadas }] = await Promise.all([
+    sb.from('perfiles').select('*').eq('id', userId).single(),
+    sb.from('resenas').select('*').eq('destinatario_id', userId).order('created_at',{ascending:false}),
+    sb.from('apuntados').select('*',{count:'exact',head:true}).eq('user_id', userId),
+    sb.from('pachangas').select('*',{count:'exact',head:true}).eq('host_id', userId)
+  ]);
+  const p = perfil || {};
+  const displayName = p.nombre || nombre || 'Usuario';
+  const username = p.username ? '@'+p.username : '';
+  const avHTML = p.avatar_url
+    ? `<img src="${p.avatar_url}" style="width:100%;height:100%;object-fit:cover;" alt="${displayName}">`
+    : getInitials(displayName);
+  const avgRating = resenas?.length
+    ? (resenas.reduce((s,r)=>s+r.puntuacion,0)/resenas.length).toFixed(1)
+    : null;
+  const resenasHTML = (resenas||[]).length ? resenas.map(r=>`
+    <div class="review-card">
+      <div class="rev-header">
+        <div class="rev-av">${getInitials(r.autor_nombre||'?')}</div>
+        <div><div class="rev-author">${r.autor_nombre}</div><div class="rev-date">${new Date(r.created_at).toLocaleDateString('es-ES')}</div></div>
+        <div class="rev-stars">${'★'.repeat(r.puntuacion)+'☆'.repeat(5-r.puntuacion)}</div>
+      </div>
+      <div class="rev-text">${r.texto}</div>
+    </div>`).join('') : '<p style="font-size:13px;color:var(--text-muted)">Sin valoraciones todavía.</p>';
+
+  document.getElementById('pub-content').innerHTML = `
+    <div class="profile-hero" style="text-align:center;">
+      <div style="width:72px;height:72px;border-radius:50%;background:var(--green-light);display:flex;align-items:center;justify-content:center;font-family:Syne,sans-serif;font-size:22px;font-weight:700;color:var(--green-dark);overflow:hidden;margin:0 auto 12px;">${avHTML}</div>
+      <div class="profile-name-display">${displayName}</div>
+      ${username?`<div class="profile-username">${username}</div>`:''}
+      ${p.bio?`<div class="profile-bio">${p.bio}</div>`:''}
+      ${avgRating?`<div class="profile-rating stars" style="margin-top:6px;">★ ${avgRating} <span style="color:var(--text-muted);font-size:12px">(${resenas.length} valoraciones)</span></div>`:''}
+    </div>
+    <div class="stats-grid" style="margin:0 1rem 12px;">
+      <div class="stat-card"><div class="stat-num">${jugadas||0}</div><div class="stat-lbl">Jugadas</div></div>
+      <div class="stat-card"><div class="stat-num">${organizadas||0}</div><div class="stat-lbl">Organizadas</div></div>
+      <div class="stat-card"><div class="stat-num">${avgRating||'—'}</div><div class="stat-lbl">Puntuación</div></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Valoraciones</div>
+      ${resenasHTML}
+    </div>`;
 }
 
 async function crearPachanga() {
@@ -944,13 +1052,20 @@ function actualizarNecesitas() {
 }
 
 function goHome() { if (currentUser) showScreen('explore'); else showScreen('auth'); }
+let prevScreen = 'explore';
 function showScreen(name) {
+  const current = document.querySelector('.screen.active');
+  if (current && current.id !== 'screen-'+name) prevScreen = current.id.replace('screen-','');
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById('screen-'+name).classList.add('active');
   document.querySelectorAll('.bnav-item').forEach(b=>b.classList.remove('active'));
   if(name==='explore'){ document.querySelectorAll('.bnav-item')[0].classList.add('active'); loadPachangas(); loadAd('explore','ad-explore'); }
   if(name==='create') document.querySelectorAll('.bnav-item')[1].classList.add('active');
   if(name==='perfil'){ document.querySelectorAll('.bnav-item')[2].classList.add('active'); loadPerfilScreen(); loadAd('perfil','ad-perfil'); }
+  if(name==='public-profile'){
+    const backBtn = document.getElementById('pub-back-btn');
+    if(backBtn) backBtn.onclick = () => showScreen(prevScreen);
+  }
 }
 
 function showToast(msg) {
