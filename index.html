@@ -539,13 +539,15 @@ async function guardarPerfil() {
   let avatar_url = currentPerfil?.avatar_url || null;
 
   if (pendingAvatarFile) {
-    const ext = pendingAvatarFile.name.split('.').pop();
+    const ext = pendingAvatarFile.name.split('.').pop().toLowerCase();
     const path = `${currentUser.id}/avatar.${ext}`;
-    const { error: upErr } = await sb.storage.from('avatars').upload(path, pendingAvatarFile, { upsert:true });
-    if (!upErr) {
-      const { data: urlData } = sb.storage.from('avatars').getPublicUrl(path);
-      avatar_url = urlData.publicUrl + '?t=' + Date.now();
+    await sb.storage.from('avatars').remove([path]);
+    const { data: upData, error: upErr } = await sb.storage.from('avatars').upload(path, pendingAvatarFile, { upsert: true, contentType: pendingAvatarFile.type });
+    if (upErr) {
+      showToast('Error foto: ' + upErr.message); return;
     }
+    const { data: urlData } = sb.storage.from('avatars').getPublicUrl(path);
+    avatar_url = urlData.publicUrl + '?t=' + Date.now();
   }
 
   const updates = { nombre, username: username||null, bio: bio||null, avatar_url };
@@ -777,13 +779,13 @@ async function crearPachanga() {
   const hora = document.getElementById('f-hora').value;
   if (!titulo||!lugar||!fecha||!hora) { showToast('Rellena todos los campos'); return; }
   const nombre = getDisplayName();
-  const { error } = await sb.from('pachangas').insert({
+  const { data: nueva, error } = await sb.from('pachangas').insert({
     titulo, deporte:selSportVal, lugar, fecha, hora,
     total_jugadores:parseInt(document.getElementById('f-total').value)||10,
     confirmados_externos:parseInt(document.getElementById('f-conf').value)||0,
     nivel:selNivelVal, descripcion:document.getElementById('f-desc').value,
     host_id:currentUser.id, host_nombre:nombre
-  });
+  }).select().single();
   if (error) { showToast('Error: '+error.message); return; }
   showToast('¡Pachanga publicada!');
   ['f-titulo','f-lugar','f-fecha','f-hora','f-desc'].forEach(id => document.getElementById(id).value='');
