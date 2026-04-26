@@ -578,16 +578,32 @@ async function guardarPerfil() {
 async function loadAd(posicion, containerId) {
   const el = document.getElementById(containerId);
   if (!el) return;
-  const { data } = await sb.from('anunciantes').select('*').eq('activo', true).or(`posicion.eq.${posicion},posicion.eq.todas`).limit(1).single().catch(()=>({data:null}));
-  if (!data) { el.innerHTML=''; return; }
+  try {
+    let query = sb.from('anunciantes').select('*').eq('activo', true);
+    // Try to filter by position, fall back to any active ad
+    const { data: exact } = await sb.from('anunciantes').select('*').eq('activo', true).eq('posicion', posicion).limit(1);
+    const { data: todas } = await sb.from('anunciantes').select('*').eq('activo', true).eq('posicion', 'todas').limit(1);
+    const data = exact?.[0] || todas?.[0] || null;
+    if (!data) {
+      // Last resort: any active ad
+      const { data: any } = await sb.from('anunciantes').select('*').eq('activo', true).limit(1);
+      if (!any?.[0]) { el.innerHTML=''; return; }
+      renderAd(el, any[0]);
+    } else {
+      renderAd(el, data);
+    }
+  } catch(e) { el.innerHTML=''; }
+}
+
+function renderAd(el, data) {
   el.innerHTML = `<div class="ad-banner" onclick="window.open('${data.url||'#'}','_blank')">
     <div class="ad-inner">
-      <div class="ad-icon" style="background:${data.color_fondo}">${data.emoji}</div>
+      <div class="ad-icon" style="background:${data.color_fondo||'#EAF3DE'}">${data.emoji||'📢'}</div>
       <div class="ad-text">
         <div class="ad-label">Anuncio · Patrocinado</div>
-        <div class="ad-title">${data.nombre} — ${data.descripcion}</div>
+        <div class="ad-title">${data.nombre}${data.descripcion?' — '+data.descripcion:''}</div>
       </div>
-      <div class="ad-cta">${data.cta}</div>
+      <div class="ad-cta">${data.cta||'Ver más'}</div>
     </div>
   </div>`;
 }
