@@ -660,17 +660,20 @@ async function openDetail(id) {
 
   const apuntadosApp = apuntados?.length||0;
   const confirmadosExternos = p.confirmados_externos||0;
-  const conf = apuntadosApp + confirmadosExternos;
+  const titulares = (apuntados||[]).filter(a=>!a.es_reserva);
+  const reservas = (apuntados||[]).filter(a=>a.es_reserva);
+  const conf = titulares.length + confirmadosExternos;
   const libre = p.total_jugadores - conf;
   const pct = Math.round((conf/p.total_jugadores)*100);
   const fecha = new Date(p.fecha+'T00:00:00').toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
   const hora = p.hora.substring(0,5);
-  const yaApuntado = apuntados?.some(a=>a.user_id===currentUser?.id);
+  const yaApuntado = apuntados?.some(a=>a.user_id===currentUser?.id && !a.es_reserva);
+  const yaReserva = apuntados?.some(a=>a.user_id===currentUser?.id && a.es_reserva);
   const esHost = currentUser?.id === p.host_id;
   const sc = libre===1?'spot-last':libre<=2?'spot-few':'spot-ok';
   const avColors = ['av0','av1','av2','av3'];
 
-  const playersHTML = (apuntados||[]).map((a,i) => {
+  const makePlayerRow = (a, i) => {
     const pp = ppMap[a.user_id]||{};
     const av = pp.avatar_url ? `<img src="${pp.avatar_url}" alt="">` : getInitials(a.user_nombre||'?');
     const displayName = pp.username ? '@'+pp.username : (a.user_nombre||'Jugador');
@@ -679,7 +682,14 @@ async function openDetail(id) {
       <div class="p-info"><div class="p-name">${displayName}</div><div class="p-stars">★★★★☆</div></div>
       ${a.user_id===p.host_id?'<span class="host-pill">Anfitrión</span>':''}
     </div>`;
-  }).join('');
+  };
+
+  const titularesHTML = titulares.map((a,i) => makePlayerRow(a,i)).join('');
+  const reservasHTML = reservas.length ? `
+    <div style="margin-top:12px;">
+      <div style="font-size:12px;font-weight:500;color:var(--text-muted);margin-bottom:6px;">Reservas (${reservas.length})</div>
+      ${reservas.map((a,i) => makePlayerRow(a,i)).join('')}
+    </div>` : '';
 
   const resenasHTML = (resenas||[]).length ? (resenas||[]).map(r => {
     const av = r.autor_avatar ? `<img src="${r.autor_avatar}" alt="">` : getInitials(r.autor_nombre||'?');
@@ -724,7 +734,8 @@ async function openDetail(id) {
     <div id="ad-detail" class="ad-wrap"></div>
     <div class="section" style="margin-top:1rem">
       <div class="section-title">Jugadores (${conf}/${p.total_jugadores})</div>
-      ${playersHTML||'<p style="font-size:13px;color:var(--text-muted)">Nadie apuntado todavía.</p>'}
+      ${titularesHTML||'<p style="font-size:13px;color:var(--text-muted)">Nadie apuntado todavía.</p>'}
+      ${reservasHTML}
     </div>
     <div class="section">
       <div class="section-title">Reseñas</div>
@@ -734,24 +745,46 @@ async function openDetail(id) {
     <div style="display:flex;gap:8px;margin:0 1rem 1rem;">
       <button class="btn-apuntar" style="margin:0;flex:1;background:var(--gray-bg);color:var(--text);border:1px solid var(--gray-border);" onclick="openEditPachanga('${id}')">✏️ Editar</button>
       <button class="btn-apuntar" style="margin:0;flex:1;background:#FCEBEB;color:#791F1F;border:1px solid #F09595;" onclick="eliminarPachanga('${id}')">🗑 Eliminar</button>
+    </div>` : yaApuntado || yaReserva ? `
+    <div style="display:flex;gap:8px;margin:0 1rem 1rem;">
+      <div class="btn-apuntar apuntado" style="margin:0;flex:2;text-align:center;">
+        ${yaReserva ? '⏳ Estás en lista de reservas' : '✓ Estás apuntado'}
+      </div>
+      <button class="btn-apuntar" style="margin:0;flex:1;background:#FCEBEB;color:#791F1F;border:1px solid #F09595;font-size:13px;" onclick="desapuntarse('${id}')">Borrarse</button>
     </div>` : `
-    <button class="btn-apuntar${yaApuntado?' apuntado':''}" id="btn-ap" onclick="apuntarse('${id}')" ${libre<=0&&!yaApuntado?'disabled':''}>
-      ${yaApuntado?'✓ Ya estás apuntado':libre<=0?'Sin plazas disponibles':'¡Apuntarme a esta pachanga!'}
+    <button class="btn-apuntar" id="btn-ap" onclick="apuntarse('${id}')">
+      ${libre<=0 ? '⏳ Apuntarme como reserva' : '¡Apuntarme a esta pachanga!'}
     </button>`}`;
   loadAd('detail','ad-detail');
 }
 
 async function apuntarse(id) {
   if (!currentUser) { showScreen('auth'); showToast('Necesitas estar registrado'); return; }
-  // Check spots remaining
-  const { data: apCheck } = await sb.from('apuntados').select('*',{count:'exact'}).eq('pachanga_id',id);
-  const apCount = apCheck?.length||0;
+  const { data: apCheck } = await sb.from('apuntados').select('*').eq('pachanga_id',id);
+  const apCount = (apCheck||[]).filter(a=>!a.es_reserva).length;
   const libres = currentPachanga.total_jugadores - (currentPachanga.confirmados_externos||0) - apCount;
-  if (libres <= 0) { showToast('Lo sentimos, ya no quedan plazas'); return; }
   const nombre = getDisplayName();
-  const { error } = await sb.from('apuntados').insert({ pachanga_id:id, user_id:currentUser.id, user_nombre:nombre });
+  const esReserva = libres <= 0;
+  const { error } = await sb.from('apuntados').insert({ pachanga_id:id, user_id:currentUser.id, user_nombre:nombre, es_reserva:esReserva });
   if (error) { showToast('Ya estás apuntado'); return; }
-  showToast('¡Apuntado! El organizador te contactará.');
+  showToast(esReserva ? '¡Apuntado como reserva! Te avisaremos si hay una plaza.' : '¡Apuntado! Nos vemos en el campo.');
+  openDetail(id);
+}
+
+async function desapuntarse(id) {
+  if (!currentUser || !currentPachanga) return;
+  // Check if cancellation is allowed (more than 2h before)
+  const fechaHora = new Date(`${currentPachanga.fecha}T${currentPachanga.hora}`);
+  const ahora = new Date();
+  const diffHoras = (fechaHora - ahora) / (1000 * 60 * 60);
+  if (diffHoras < 2) {
+    showToast('No puedes borrarte con menos de 2h de antelación');
+    return;
+  }
+  if (!confirm('¿Seguro que quieres borrarte de esta pachanga?')) return;
+  const { error } = await sb.from('apuntados').delete().eq('pachanga_id', id).eq('user_id', currentUser.id);
+  if (error) { showToast('Error al borrarte: ' + error.message); return; }
+  showToast('Te has borrado de la pachanga.');
   openDetail(id);
 }
 
