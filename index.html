@@ -317,13 +317,13 @@ textarea.form-input{resize:vertical;min-height:70px;}
       <div class="profile-name-display" id="pf-nombre">Cargando...</div>
       <div class="profile-username" id="pf-username"></div>
       <div class="profile-bio" id="pf-bio"></div>
-      <div class="profile-rating stars">★★★★☆ <span style="color:var(--text-muted);font-size:12px">4.2 (12 valoraciones)</span></div>
+      <div class="profile-rating" id="pf-rating"></div>
       <button class="btn-edit-profile" onclick="openEditModal()">Editar perfil</button>
     </div>
     <div class="stats-grid">
       <div class="stat-card"><div class="stat-num" id="pf-jugadas">0</div><div class="stat-lbl">Jugadas</div></div>
       <div class="stat-card"><div class="stat-num" id="pf-organizadas">0</div><div class="stat-lbl">Organizadas</div></div>
-      <div class="stat-card"><div class="stat-num">4.2</div><div class="stat-lbl">Puntuación</div></div>
+      <div class="stat-card"><div class="stat-num" id="pf-rating-num">—</div><div class="stat-lbl">Puntuación</div></div>
     </div>
     <div id="ad-perfil" class="ad-wrap" style="padding:0 0 12px;"></div>
     <div class="section-title" style="margin-bottom:10px;">Reseñas recibidas</div>
@@ -956,6 +956,21 @@ async function loadPerfilScreen() {
   ]);
   document.getElementById('pf-jugadas').textContent = jugadas||0;
   document.getElementById('pf-organizadas').textContent = organizadas||0;
+
+  // Calculate real average rating
+  const ratingEl = document.getElementById('pf-rating');
+  const ratingNumEl = document.getElementById('pf-rating-num');
+  if (resenas?.length) {
+    const avg = resenas.reduce((s,r)=>s+r.puntuacion,0)/resenas.length;
+    const avgFixed = avg.toFixed(1);
+    const fullStars = Math.round(avg);
+    const starsStr = '★'.repeat(fullStars)+'☆'.repeat(5-fullStars);
+    ratingEl.innerHTML = `<span style="color:var(--amber)">${starsStr}</span> <span style="color:var(--text-muted);font-size:12px">${avgFixed} (${resenas.length} valoración${resenas.length!==1?'es':''})</span>`;
+    ratingNumEl.textContent = avgFixed;
+  } else {
+    ratingEl.innerHTML = '<span style="color:var(--text-muted);font-size:13px;">Sin valoraciones aún</span>';
+    ratingNumEl.textContent = '—';
+  }
 
   const resenasEl = document.getElementById('mis-resenas');
   if (!resenas?.length) { resenasEl.innerHTML='<p style="font-size:13px;color:var(--text-muted);padding:0.5rem 0">Todavía no tienes reseñas.</p>'; return; }
