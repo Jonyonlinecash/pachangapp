@@ -1074,6 +1074,13 @@ function showToast(msg) {
   setTimeout(()=>t.classList.remove('show'),2800);
 }
 
+// Register service worker for PWA
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  });
+}
+
 (async()=>{
   const { data:{session} } = await sb.auth.getSession();
   currentUser = session?.user||null;
